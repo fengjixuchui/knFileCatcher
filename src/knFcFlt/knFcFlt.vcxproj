@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>knFcFlt</RootNamespace>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <TargetName>knFcFlt</TargetName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildProjectDirectory)\..\..\build\ide\$(ProjectName)\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildProjectDirectory)\..\..\build\ide\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <TargetExt>.sys</TargetExt>
+    <EnableInf2cat>false</EnableInf2cat>
+    <SignMode>Off</SignMode>
+    <SpectreMitigation>false</SpectreMitigation>
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <Optimization>Disabled</Optimization>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <ExceptionHandling>false</ExceptionHandling>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <CallingConvention>StdCall</CallingConvention>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_AMD64_;AMD64;_WIN64;NTDDI_VERSION=0x0A000007;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EntryPointSymbol>DriverEntry</EntryPointSymbol>
+      <AdditionalDependencies>fltMgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+    <PostBuildEvent>
+      <Message>Signing knFcFlt.sys with src\sign.ps1</Message>
+      <Command>"$(SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\sign.ps1" -Sys "$(TargetPath)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="knFcFlt.cpp" />
+    <ClCompile Include="knFcCallbacks.cpp" />
+    <ClCompile Include="knFcComm.cpp" />
+    <ClCompile Include="knFcConfig.cpp" />
+    <ClCompile Include="knFcContexts.cpp" />
+    <ClCompile Include="knFcExclude.cpp" />
+    <ClCompile Include="knFcQueue.cpp" />
+    <ClCompile Include="knFcTrack.cpp" />
+    <ClCompile Include="knFcUtil.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="knFcFlt.h" />
+    <ClInclude Include="knFcVersion.h" />
+    <ClInclude Include="..\common\knFcProto.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="knFcFlt.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="knFcFlt.inf" />
+  </ItemGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <Target Name="EnsureKnFcVersionHeader" BeforeTargets="ClCompile;ResourceCompile">
+    <ItemGroup>
+      <KnFcVersionHeaderLine Include="/*" />
+      <KnFcVersionHeaderLine Include=" * knFcVersion.h" />
+      <KnFcVersionHeaderLine Include=" * Auto-generated placeholder by knFcFlt.vcxproj." />
+      <KnFcVersionHeaderLine Include=" */" />
+      <KnFcVersionHeaderLine Include="#pragma once" />
+      <KnFcVersionHeaderLine Include="#define KNFC_VER_MAJOR 0" />
+      <KnFcVersionHeaderLine Include="#define KNFC_VER_MINOR 0" />
+      <KnFcVersionHeaderLine Include="#define KNFC_VER_PATCH 0" />
+      <KnFcVersionHeaderLine Include="#define KNFC_VER_BUILD 0" />
+      <KnFcVersionHeaderLine Include="#define KNFC_VER_STR   &quot;0.0.0.0&quot;" />
+    </ItemGroup>
+    <WriteLinesToFile
+      File="$(ProjectDir)knFcVersion.h"
+      Lines="@(KnFcVersionHeaderLine)"
+      Overwrite="true"
+      Condition="!Exists('$(ProjectDir)knFcVersion.h')" />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

@@ -1,0 +1,45 @@
+/*
+ * knFcFlt.rc
+ * Win32 VS_VERSION_INFO resource for knFcFlt.sys.
+ *
+ * Self-contained on purpose: does NOT include <windows.h> so the script
+ * doesn't have to wire the SDK's um\include directory into rc.exe's /I
+ * search path. The handful of FILEOS/FILETYPE/FILESUBTYPE constants we
+ * need are inlined as their documented numeric values.
+ */
+
+#include "knFcVersion.h"
+
+#define _VOS_NT_WINDOWS32     0x00040004L
+#define _VFT_DRV              0x00000003L
+#define _VFT2_DRV_FILE_SYSTEM 0x00000008L
+#define _FFI_FILEFLAGSMASK    0x0000003FL
+
+1 VERSIONINFO
+ FILEVERSION     KNFC_VER_MAJOR, KNFC_VER_MINOR, KNFC_VER_PATCH, KNFC_VER_BUILD
+ PRODUCTVERSION  KNFC_VER_MAJOR, KNFC_VER_MINOR, KNFC_VER_PATCH, KNFC_VER_BUILD
+ FILEFLAGSMASK   _FFI_FILEFLAGSMASK
+ FILEFLAGS       0L
+ FILEOS          _VOS_NT_WINDOWS32
+ FILETYPE        _VFT_DRV
+ FILESUBTYPE     _VFT2_DRV_FILE_SYSTEM
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "kernullist"
+            VALUE "FileDescription",  "knFileCatcher Minifilter Driver"
+            VALUE "FileVersion",      KNFC_VER_STR
+            VALUE "InternalName",     "knFcFlt.sys"
+            VALUE "LegalCopyright",   "Copyright (c) kernullist"
+            VALUE "OriginalFilename", "knFcFlt.sys"
+            VALUE "ProductName",      "knFileCatcher"
+            VALUE "ProductVersion",   KNFC_VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END

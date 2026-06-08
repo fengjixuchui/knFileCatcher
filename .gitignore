@@ -1,0 +1,59 @@
+# --------------------------------------------------------------------
+# knFileCatcher .gitignore
+# --------------------------------------------------------------------
+
+# Build artifacts produced by build-release.ps1 / build-driver.ps1
+build/
+release/
+
+# .NET / WPF intermediate and output directories
+bin/
+obj/
+
+# Visual Studio / Rider local state
+.vs/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+
+# Auto-generated kernel resource header. build-release.ps1 regenerates
+# it on every build; build-driver.ps1 (standalone) drops a 0.0.0
+# placeholder if missing.
+src/knFcFlt/knFcVersion.h
+src/knFcFlt/knFcFlt.res
+
+# Compiler / linker intermediates (defensive - everything should already
+# land under build\ but stray files can appear during ad-hoc cl/link runs)
+*.obj
+*.ilk
+*.exp
+*.lib
+*.pdb
+*.idb
+
+# Driver signing key material. The dev cert is generated on demand by
+# sign.ps1 / installed at runtime by knFcUxWpf; never commit private keys.
+*.pfx
+*.pvk
+sign-cert/
+
+# Runtime logs from the app
+*.log
+*.trace.log
+knFcUx.errors.log
+knFcUx.trace.log
+
+# Manifest produced by ManifestWriter at runtime
+manifest.jsonl
+
+# Internal design notes - kept local only, not distributed via git
+Design.md
+
+# OS / editor crud
+Thumbs.db
+desktop.ini
+.DS_Store
+*~
+*.swp
+*.bak

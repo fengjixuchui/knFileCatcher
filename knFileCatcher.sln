@@ -1,0 +1,36 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "knFcFlt", "src\knFcFlt\knFcFlt.vcxproj", "{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "knFcUxWpf", "src\knFcUxWpf\knFcUxWpf.csproj", "{3366E700-4952-4C38-A6DD-956D522A35CF}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "knFcTester", "src\knFcTester\knFcTester.vcxproj", "{B928E9A9-ABCF-4B80-8E10-B5025100BF20}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}.Debug|x64.ActiveCfg = Debug|x64
+		{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}.Debug|x64.Build.0 = Debug|x64
+		{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}.Release|x64.ActiveCfg = Release|x64
+		{C97B1B12-27D3-4B8E-997A-FD6101C4FE00}.Release|x64.Build.0 = Release|x64
+		{3366E700-4952-4C38-A6DD-956D522A35CF}.Debug|x64.ActiveCfg = Debug|x64
+		{3366E700-4952-4C38-A6DD-956D522A35CF}.Debug|x64.Build.0 = Debug|x64
+		{3366E700-4952-4C38-A6DD-956D522A35CF}.Release|x64.ActiveCfg = Release|x64
+		{3366E700-4952-4C38-A6DD-956D522A35CF}.Release|x64.Build.0 = Release|x64
+		{B928E9A9-ABCF-4B80-8E10-B5025100BF20}.Debug|x64.ActiveCfg = Debug|x64
+		{B928E9A9-ABCF-4B80-8E10-B5025100BF20}.Debug|x64.Build.0 = Debug|x64
+		{B928E9A9-ABCF-4B80-8E10-B5025100BF20}.Release|x64.ActiveCfg = Release|x64
+		{B928E9A9-ABCF-4B80-8E10-B5025100BF20}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {D24F4C4A-53EF-4C9A-8F46-0D49B04896C9}
+	EndGlobalSection
+EndGlobal

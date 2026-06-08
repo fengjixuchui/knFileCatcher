@@ -1,0 +1,425 @@
+<Window x:Class="KnFc.Ux.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:KnFc.Ux"
+        Title="knFileCatcher"
+        Width="1280" Height="920"
+        MinWidth="1100" MinHeight="780"
+        FontFamily="Segoe UI"
+        Background="{StaticResource BgBrush}"
+        Icon="/knFcUxWpf.ico">
+    <Window.DataContext>
+        <local:MainViewModel/>
+    </Window.DataContext>
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===== Header ===== -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Vertical">
+                <TextBlock Text="knFileCatcher" Style="{StaticResource H1}"/>
+                <TextBlock Text="Process-scoped file capture for Windows" Style="{StaticResource Muted}" Margin="0,2,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Border>
+                    <Border.Style>
+                        <Style TargetType="Border" BasedOn="{StaticResource StatusPill}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ActiveText}" Value="tracking">
+                                    <Setter Property="Background" Value="{StaticResource SuccessBrush}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="{Binding ActiveText}" Foreground="White" FontWeight="SemiBold" FontSize="12"/>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <!-- ===== Settings card: backup root, watch roots, excludes ===== -->
+        <Border Grid.Row="1" Style="{StaticResource Card}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="20"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="20"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- backup root + tracking control -->
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Backup root" Style="{StaticResource HeaderText}"/>
+                    <TextBox Text="{Binding BackupRoot, UpdateSourceTrigger=PropertyChanged}"
+                             IsReadOnly="{Binding BackupRootReadOnly}"/>
+                    <TextBlock Text="Where session_* mirrors live." Style="{StaticResource Muted}" Margin="0,6,0,16"/>
+
+                    <TextBlock Text="Tracking" Style="{StaticResource HeaderText}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="Start"
+                                Style="{StaticResource PrimaryButton}"
+                                Command="{Binding StartCommand}"/>
+                        <Button Content="Stop"
+                                Command="{Binding StopCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- watch roots -->
+                <StackPanel Grid.Column="2">
+                    <TextBlock Text="Watch roots" Style="{StaticResource HeaderText}"/>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewWatchRoot, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,0,8,0"/>
+                        <Button Grid.Column="1" Content="Add"
+                                Style="{StaticResource PrimaryButton}"
+                                MinWidth="64" Margin="0,0,6,0"
+                                Command="{Binding AddWatchRootCommand}"/>
+                        <Button Grid.Column="2" Content="Clear"
+                                MinWidth="64" Margin="0"
+                                Command="{Binding ClearWatchRootsCommand}"/>
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding WatchRoots}" MinHeight="32">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource ChipRow}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                        <Button Grid.Column="1" Content="&#x2715;"
+                                                Style="{StaticResource ChipDeleteButton}"
+                                                Command="{Binding DataContext.RemoveWatchRootCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0">
+                        <Run Text="DOS path; e.g."/>
+                        <Run Text=" C:\Temp\knFc-watch" FontFamily="Consolas"/>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- excludes -->
+                <StackPanel Grid.Column="4">
+                    <TextBlock Text="Exclude patterns" Style="{StaticResource HeaderText}"/>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewExclude, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="0,0,8,0"/>
+                        <Button Grid.Column="1" Content="Add"
+                                Style="{StaticResource PrimaryButton}"
+                                MinWidth="64" Margin="0,0,6,0"
+                                Command="{Binding AddExcludeCommand}"/>
+                        <Button Grid.Column="2" Content="Clear"
+                                MinWidth="64" Margin="0"
+                                Command="{Binding ClearExcludesCommand}"/>
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Excludes}" MinHeight="32">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource ChipRow}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding}"
+                                                   FontFamily="Consolas"
+                                                   VerticalAlignment="Center"/>
+                                        <Button Grid.Column="1" Content="&#x2715;"
+                                                Style="{StaticResource ChipDeleteButton}"
+                                                Command="{Binding DataContext.RemoveExcludeCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0">
+                        <Run Text=".tmp"  FontFamily="Consolas"/>
+                        <Run Text=" -> ext suffix;  "/>
+                        <Run Text="\Temp\"  FontFamily="Consolas"/>
+                        <Run Text=" -> substring."/>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ===== TabControl: Live / Process Tree / Sessions ===== -->
+        <TabControl Grid.Row="2">
+
+            <!-- Live -->
+            <TabItem Header="Live">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <!-- All Auto so the outer ScrollViewer can fall
+                             back to scrolling when the window is small.
+                             The History card has an explicit Height so
+                             the DataGrid inside it doesn't try to grow
+                             to fit every row in the infinite-height
+                             environment a ScrollViewer creates. -->
+                        <RowDefinition Height="Auto" MaxHeight="280"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto" MinHeight="120"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Stat cards -->
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="14"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource Card}">
+                            <Expander Header="Driver" IsExpanded="False"
+                                      FontWeight="SemiBold">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                          MaxHeight="220" Margin="0,8,0,0">
+                            <StackPanel>
+                                <UniformGrid Columns="2">
+                                    <TextBlock Text="Tracked PIDs"   Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding TrackedProcesses}" Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Watch roots"    Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding WatchRootCount}"   Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Excludes"       Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding ExcludeCount}"     Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Queue depth"    Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding QueueDepth}"       Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Queue sent"     Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding QueueSent}"        Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Queue failed"   Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding QueueFailed}"      Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Queue dropped"  Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding QueueDropped}"     Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Excluded"       Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding ExcludeMatched}"   Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Sync sent"      Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding SyncCleanupSent}"  Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Sync failed"    Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding SyncCleanupFailed}" Style="{StaticResource StatValue}"/>
+                                </UniformGrid>
+                            </StackPanel>
+                            </ScrollViewer>
+                            </Expander>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource Card}">
+                            <Expander Header="Session" IsExpanded="False"
+                                      FontWeight="SemiBold">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                          MaxHeight="220" Margin="0,8,0,0">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding SessionDir}" Style="{StaticResource Muted}" TextWrapping="Wrap"
+                                               FontWeight="Normal" VerticalAlignment="Center"/>
+                                    <Button   Grid.Column="1" Content="Open folder"
+                                              MinWidth="110" Margin="8,0,0,0"
+                                              FontWeight="Normal"
+                                              Command="{Binding OpenSessionCommand}"/>
+                                </Grid>
+                                <UniformGrid Columns="2" Margin="0,10,0,0">
+                                    <TextBlock Text="Backed"        Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding Backed}"   Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Failed"        Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding Failed}"   Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Refused"       Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding Refused}"  Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Proc events rx" Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding ProcEventsRx}" Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Unknown rx"    Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding UnknownRx}" Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Dup rx (skipped)" Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding DupRx}" Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Worker error" Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding WorkerLastError}" Style="{StaticResource StatValue}"
+                                               TextWrapping="Wrap" Foreground="{StaticResource DangerBrush}"/>
+                                    <TextBlock Text="Disk"          Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding DiskFullText}" Style="{StaticResource StatValue}"/>
+                                    <TextBlock Text="Last update"   Style="{StaticResource StatLabel}"/>
+                                    <TextBlock Text="{Binding Ts}"  Style="{StaticResource StatValue}"/>
+                                </UniformGrid>
+                            </StackPanel>
+                            </ScrollViewer>
+                            </Expander>
+                        </Border>
+                    </Grid>
+
+                    <!-- History (explicit Height so the DataGrid stays finite
+                         under the outer ScrollViewer). -->
+                    <Border Grid.Row="1" Style="{StaticResource Card}" Padding="0"
+                            Height="380">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="0,0,0,1" Padding="16,12">
+                                <TextBlock Text="History" Style="{StaticResource H2}" Margin="0"/>
+                            </Border>
+                            <DataGrid ItemsSource="{Binding History}"
+                                      SelectedItem="{Binding Selected}"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True"
+                                      MouseDoubleClick="History_DoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="id"     Binding="{Binding Id}"          Width="70"/>
+                                    <DataGridTextColumn Header="time"   Binding="{Binding Ts}"          Width="180"/>
+                                    <DataGridTextColumn Header="pid"    Binding="{Binding Pid}"         Width="80"/>
+                                    <DataGridTextColumn Header="root"   Binding="{Binding RootPid}"     Width="80"/>
+                                    <DataGridTextColumn Header="flags"  Binding="{Binding Flags}"       Width="60"/>
+                                    <DataGridTextColumn Header="status" Binding="{Binding Status}"      Width="60"/>
+                                    <DataGridTextColumn Header="source" Binding="{Binding SrcFriendly}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Selected detail -->
+                    <Border Grid.Row="2" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Selected backup" Style="{StaticResource HeaderText}" Margin="0"/>
+                                <Button   Grid.Column="1" Content="Open in Explorer"
+                                          Style="{StaticResource PrimaryButton}"
+                                          Command="{Binding OpenSelectedCommand}"/>
+                            </Grid>
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="source"  Style="{StaticResource StatLabel}"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Selected.SrcFriendly}" TextWrapping="Wrap"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="NT path" Style="{StaticResource StatLabel}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Selected.SrcNt}" Style="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="backup"  Style="{StaticResource StatLabel}"/>
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Selected.Dest}" TextWrapping="Wrap"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </ScrollViewer>
+            </TabItem>
+
+            <!-- Process Tree -->
+            <TabItem Header="Process Tree">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Border Style="{StaticResource Card}" Margin="0,8,0,0">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="Tracked processes" Style="{StaticResource H2}" Margin="0"/>
+                            <TextBlock Text="{Binding TreeCount}" FontWeight="SemiBold" Margin="8,0,0,0"/>
+                            <TextBlock Text=" (truncated)" Foreground="{StaticResource DangerBrush}"
+                                       Visibility="{Binding TreeTruncated, Converter={x:Static local:BoolToVisibilityConverter.Instance}}"/>
+                        </StackPanel>
+                        <TreeView ItemsSource="{Binding RootProcesses}" BorderThickness="0" Background="Transparent">
+                            <TreeView.Resources>
+                                <HierarchicalDataTemplate DataType="{x:Type local:ProcessNode}"
+                                                          ItemsSource="{Binding Children}">
+                                    <StackPanel Orientation="Horizontal" Margin="0,3">
+                                        <Border Background="{StaticResource HoverRowBrush}" CornerRadius="3" Padding="6,2" Margin="0,0,8,0">
+                                            <TextBlock Text="{Binding RoleText}" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
+                                        </Border>
+                                        <TextBlock Text="pid="  Style="{StaticResource Muted}"/>
+                                        <TextBlock Text="{Binding Pid}" Margin="0,0,12,0"/>
+                                        <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                        <TextBlock Text=" - "/>
+                                        <TextBlock Text="{Binding ImageFriendly}" Style="{StaticResource Muted}"/>
+                                    </StackPanel>
+                                </HierarchicalDataTemplate>
+                            </TreeView.Resources>
+                        </TreeView>
+                    </DockPanel>
+                </Border>
+            </ScrollViewer>
+            </TabItem>
+
+            <!-- Sessions -->
+            <TabItem Header="Sessions">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Border Style="{StaticResource Card}" Margin="0,8,0,0" Padding="0">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Sessions" Style="{StaticResource H2}" Margin="0"/>
+                                <Button  Grid.Column="1" Content="Open in Explorer"
+                                         Style="{StaticResource PrimaryButton}"
+                                         Command="{Binding OpenSessionRowCommand}"/>
+                            </Grid>
+                        </Border>
+                        <DataGrid ItemsSource="{Binding Sessions}"
+                                  SelectedItem="{Binding SelectedSession}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  MouseDoubleClick="Sessions_DoubleClick">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="active"          Binding="{Binding IsActive}"        Width="60"/>
+                                <DataGridTextColumn Header="name"            Binding="{Binding Name}"           Width="*"/>
+                                <DataGridTextColumn Header="last write (UTC)" Binding="{Binding LastWriteUtc}"  Width="180"/>
+                                <DataGridTextColumn Header="manifest"        Binding="{Binding ManifestPresent}" Width="80"/>
+                                <DataGridTextColumn Header="manifest bytes"  Binding="{Binding ManifestBytes}"  Width="120"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Border>
+            </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- Status bar -->
+        <Border Grid.Row="3" Margin="0,8,0,0" Padding="14,8"
+                Background="{StaticResource CardBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1" CornerRadius="6">
+            <TextBlock Text="{Binding LastReply}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
+        </Border>
+    </Grid>
+</Window>

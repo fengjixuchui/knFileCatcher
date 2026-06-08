@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>KnFc.Ux</RootNamespace>
+    <AssemblyName>knFcUxWpf</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>knFcUxWpf.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- PE VS_VERSION_INFO. dotnet publish stamps these into the EXE. The
+       build-release.ps1 script overrides Version via /p:Version=x.y.z so
+       the value below is just the floor for ad-hoc builds. -->
+  <PropertyGroup>
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
+    <AssemblyVersion>$(Version).0</AssemblyVersion>
+    <FileVersion>$(Version).0</FileVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <Company>kernullist</Company>
+    <Authors>kernullist</Authors>
+    <Product>knFileCatcher</Product>
+    <AssemblyTitle>knFileCatcher</AssemblyTitle>
+    <Description>knFileCatcher - file capture tool for tracked processes (internal/dev)</Description>
+    <Copyright>Copyright (c) kernullist</Copyright>
+  </PropertyGroup>
+
+  <!-- Publish-time properties: single self-contained EXE so the target
+       machine does not need .NET 8 Desktop Runtime installed. -->
+  <PropertyGroup>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Bundled so Window.Icon="knFcUxWpf.ico" resolves at runtime
+         (ApplicationIcon by itself only stamps the PE icon resource). -->
+    <Resource Include="knFcUxWpf.ico" />
+  </ItemGroup>
+
+</Project>

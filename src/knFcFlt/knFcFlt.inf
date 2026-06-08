@@ -1,0 +1,70 @@
+;
+; knFcFlt.inf - minifilter installation INF (M1 scaffold)
+;
+; Altitude 999999.9 is intentionally outside Microsoft's allocated range.
+; This is an internal/development tool only - load with testsigning enabled.
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ProviderName%
+DriverVer   = 06/07/2026,1.0.0.0
+CatalogFile = knFcFlt.cat
+PnpLockDown = 1
+
+[DestinationDirs]
+DefaultDestDir          = 12
+knFcFlt.DriverFiles     = 12          ; %windir%\system32\drivers
+
+[DefaultInstall.NTamd64]
+OptionDesc      = %ServiceDescription%
+CopyFiles       = knFcFlt.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService      = %ServiceName%,,knFcFlt.Service
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles        = knFcFlt.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService      = %ServiceName%,0x200
+
+[knFcFlt.DriverFiles]
+knFcFlt.sys
+
+[SourceDisksFiles]
+knFcFlt.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[knFcFlt.Service]
+DisplayName     = %ServiceName%
+Description     = %ServiceDescription%
+ServiceBinary   = %12%\knFcFlt.sys
+Dependencies    = "FltMgr"
+ServiceType     = 2                   ; SERVICE_FILE_SYSTEM_DRIVER
+StartType       = 3                   ; SERVICE_DEMAND_START (manual per Design sec 15)
+ErrorControl    = 1                   ; SERVICE_ERROR_NORMAL
+LoadOrderGroup  = "FSFilter Activity Monitor"
+AddReg          = knFcFlt.AddRegistry
+
+[knFcFlt.AddRegistry]
+HKR,,"SupportedFeatures",0x00010001,0x3
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+[Strings]
+ProviderName            = "kernullist"
+ServiceName             = "knFcFlt"
+ServiceDescription      = "knFileCatcher minifilter (internal/dev)"
+DiskId1                 = "knFcFlt Installation Disk"
+
+DefaultInstance         = "knFcFlt Instance"
+Instance1.Name          = "knFcFlt Instance"
+Instance1.Altitude      = "999999.9"
+Instance1.Flags         = 0x0
