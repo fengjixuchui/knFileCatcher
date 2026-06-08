@@ -7,6 +7,11 @@ including files that are deleted before the application terminates.
 
 Internal / development build only - see [Operational scope](#operational-scope).
 
+<p align="center">
+  <img src="screenshots/demo1.png" alt="knFileCatcher live capture view" width="49%">
+  <img src="screenshots/demo2.png" alt="knFileCatcher sessions view" width="49%">
+</p>
+
 ---
 
 ## What it does
