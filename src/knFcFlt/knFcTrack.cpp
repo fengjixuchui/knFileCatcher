@@ -111,6 +111,8 @@ typedef struct _KNFC_EXIT_CTX
 
 static KNFC_EXIT_CTX g_ExitDefer;
 
+_IRQL_requires_same_
+_Function_class_(KSTART_ROUTINE)
 static VOID NTAPI knFcExitDeferWorker(_In_ PVOID Context);
 
 static VOID
@@ -179,25 +181,19 @@ knFcExitDeferStart(VOID)
     status = ObReferenceObjectByHandle(
         threadHandle, THREAD_ALL_ACCESS, *PsThreadType,
         KernelMode, (PVOID*)&g_ExitDefer.Thread, NULL);
-    ZwClose(threadHandle);
     if (!NT_SUCCESS(status))
     {
-        /* Worker thread is already running but we have no ref to wait
-         * on. Tell it to exit, best-effort wait, then fail the init so
-         * the caller doesn't continue with a phantom worker that would
-         * UAF on g_ExitDefer at driver unload. */
-        LARGE_INTEGER delay;
-
+        /* The worker is already running. Stop it and use the still-open
+         * kernel handle to join it before g_ExitDefer can be torn down. */
         g_ExitDefer.Stop    = TRUE;
         g_ExitDefer.Running = FALSE;
         KeSetEvent(&g_ExitDefer.Event, IO_NO_INCREMENT, FALSE);
-
-        delay.QuadPart = -((LONGLONG)2 * 10000 * 1000);  /* 2 seconds */
-        (VOID)KeDelayExecutionThread(KernelMode, FALSE, &delay);
-
+        (VOID)ZwWaitForSingleObject(threadHandle, FALSE, NULL);
+        ZwClose(threadHandle);
         g_ExitDefer.Thread = NULL;
         return status;
     }
+    ZwClose(threadHandle);
     return STATUS_SUCCESS;
 }
 
@@ -243,6 +239,8 @@ knFcExitDeferStop(VOID)
     /* Running was already cleared at the top of this function. */
 }
 
+_IRQL_requires_same_
+_Function_class_(KSTART_ROUTINE)
 static VOID NTAPI
 knFcExitDeferWorker(_In_ PVOID Context)
 {
@@ -449,7 +447,7 @@ knFcTrackGetCount(VOID)
 
 VOID
 knFcTrackDump(
-    _Out_writes_(MaxEntries) KNFC_PROC* OutArr,
+    _Out_writes_to_(MaxEntries, *OutCount) KNFC_PROC* OutArr,
     _In_ ULONG MaxEntries,
     _Out_ PULONG OutCount,
     _Out_ PBOOLEAN OutTruncated)

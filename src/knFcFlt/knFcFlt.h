@@ -84,6 +84,18 @@ FLT_PREOP_CALLBACK_STATUS knFcPreCreate(
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
     );
 
+FLT_PREOP_CALLBACK_STATUS knFcPreWrite(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+    );
+
+FLT_PREOP_CALLBACK_STATUS knFcPreSetInformation(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+    );
+
 FLT_PREOP_CALLBACK_STATUS knFcPreAcquireForSection(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
@@ -130,6 +142,8 @@ typedef struct _KNFC_SHC
     HANDLE          OwnerPid;
     HANDLE          RootPid;
     volatile LONG   Flags;
+    volatile LONG   DeleteDispositionObserved;
+    BOOLEAN         DeleteOnCloseAtCreate;
     EX_PUSH_LOCK    NameLock;
     UNICODE_STRING  OriginalName;
     UNICODE_STRING  CurrentName;
@@ -177,7 +191,7 @@ ULONG    knFcTrackGetCount(VOID);
  * Fills up to MaxEntries; *OutTruncated = nonzero if there were more.
  */
 VOID     knFcTrackDump(
-    _Out_writes_(MaxEntries) KNFC_PROC* OutArr,
+    _Out_writes_to_(MaxEntries, *OutCount) KNFC_PROC* OutArr,
     _In_ ULONG MaxEntries,
     _Out_ PULONG OutCount,
     _Out_ PBOOLEAN OutTruncated);
@@ -190,6 +204,7 @@ VOID     knFcUtilFreeImagePath(_Inout_ PUNICODE_STRING InOutPath);
 NTSTATUS knFcQueueInitialize(VOID);
 VOID     knFcQueueUninitialize(VOID);
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS knFcQueueEnqueue(
     _In_ HANDLE OwnerPid,
     _In_ HANDLE RootPid,

@@ -28,8 +28,8 @@ static NTSTATUS FLTAPI knFcFilterUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
 CONST FLT_OPERATION_REGISTRATION g_Callbacks[] =
 {
     { IRP_MJ_CREATE,                              0, knFcPreCreate,             knFcPostCreate },
-    { IRP_MJ_WRITE,                               0, NULL,                      knFcPostWrite },
-    { IRP_MJ_SET_INFORMATION,                     0, NULL,                      knFcPostSetInformation },
+    { IRP_MJ_WRITE,                               0, knFcPreWrite,              knFcPostWrite },
+    { IRP_MJ_SET_INFORMATION,                     0, knFcPreSetInformation,     knFcPostSetInformation },
     { IRP_MJ_CLEANUP,                             0, knFcPreCleanup,            knFcPostCleanup },
     { IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION, 0, knFcPreAcquireForSection,  NULL },
     { IRP_MJ_OPERATION_END }

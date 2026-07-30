@@ -4,8 +4,10 @@
  *
  *   IRP_MJ_CREATE                              Pre  : early skip
  *                                              Post : classify intent, install SHC
- *   IRP_MJ_WRITE                               Post : MODIFIED
- *   IRP_MJ_SET_INFORMATION                     Post : EOF/alloc -> MODIFIED;
+ *   IRP_MJ_WRITE                               Pre  : capture SHC reference
+ *                                              Post : MODIFIED
+ *   IRP_MJ_SET_INFORMATION                     Pre  : capture SHC reference
+ *                                              Post : EOF/alloc -> MODIFIED;
  *                                                     rename -> capture new name;
  *                                                     dispo -> DELETE_ON_CLOSE
  *   IRP_MJ_CLEANUP                             Post : pick final name and enqueue
@@ -191,6 +193,8 @@ knFcPostCreate(
     shc->OwnerPid = PsGetCurrentProcessId();
     shc->RootPid  = rootPid;
     shc->Flags    = (LONG)writeFlags;
+    shc->DeleteOnCloseAtCreate =
+        BooleanFlagOn(Data->Iopb->Parameters.Create.Options, FILE_DELETE_ON_CLOSE);
     FltInitializePushLock(&shc->NameLock);
 
     status = FltGetFileNameInformation(
@@ -219,7 +223,34 @@ knFcPostCreate(
     return FLT_POSTOP_FINISHED_PROCESSING;
 }
 
-/* ----- PostWrite ----- */
+/* ----- PreWrite / PostWrite ----- */
+
+FLT_PREOP_CALLBACK_STATUS
+knFcPreWrite(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+    )
+{
+    NTSTATUS status;
+    PKNFC_SHC shc = NULL;
+
+    UNREFERENCED_PARAMETER(Data);
+
+    *CompletionContext = NULL;
+
+    status = FltGetStreamHandleContext(
+        FltObjects->Instance,
+        FltObjects->FileObject,
+        (PFLT_CONTEXT*)&shc);
+    if (!NT_SUCCESS(status))
+    {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    *CompletionContext = shc;
+    return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+}
 
 FLT_POSTOP_CALLBACK_STATUS
 knFcPostWrite(
@@ -229,22 +260,125 @@ knFcPostWrite(
     _In_ FLT_POST_OPERATION_FLAGS Flags
     )
 {
+    PKNFC_SHC shc = (PKNFC_SHC)CompletionContext;
+
+    UNREFERENCED_PARAMETER(FltObjects);
+
+    if (shc == NULL)
+    {
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    if (!FlagOn(Flags, FLTFL_POST_OPERATION_DRAINING)
+        && NT_SUCCESS(Data->IoStatus.Status)
+        && Data->IoStatus.Information != 0)
+    {
+        InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_MODIFIED);
+    }
+
+    FltReleaseContext(shc);
+    return FLT_POSTOP_FINISHED_PROCESSING;
+}
+
+/* ----- PreSetInformation / PostSetInformation ----- */
+
+#define KNFC_SETINFO_MARK_MODIFIED    0x00000001u
+#define KNFC_SETINFO_SET_DELETE       0x00000002u
+#define KNFC_SETINFO_CLEAR_DELETE     0x00000004u
+#define KNFC_SETINFO_CAPTURE_RENAME   0x00000008u
+
+typedef struct _KNFC_SETINFO_COMPLETION
+{
+    PKNFC_SHC  Shc;
+    ULONG      Actions;
+} KNFC_SETINFO_COMPLETION, *PKNFC_SETINFO_COMPLETION;
+
+static LONG
+knFcSetInformationExceptionFilter(_In_ NTSTATUS Status)
+{
+    return FsRtlIsNtstatusExpected(Status)
+        ? EXCEPTION_EXECUTE_HANDLER
+        : EXCEPTION_CONTINUE_SEARCH;
+}
+
+static ULONG
+knFcGetSetInformationActions(_In_ PFLT_CALLBACK_DATA Data)
+{
+    FILE_INFORMATION_CLASS cls =
+        Data->Iopb->Parameters.SetFileInformation.FileInformationClass;
+    ULONG length = Data->Iopb->Parameters.SetFileInformation.Length;
+    PVOID buffer = Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+
+    switch (cls)
+    {
+    case FileEndOfFileInformation:
+    case FileAllocationInformation:
+    case FileValidDataLengthInformation:
+        return KNFC_SETINFO_MARK_MODIFIED;
+
+    case FileDispositionInformation:
+        if (buffer != NULL && length >= sizeof(FILE_DISPOSITION_INFORMATION))
+        {
+            BOOLEAN deleteFile = FALSE;
+            __try
+            {
+                deleteFile = ((PFILE_DISPOSITION_INFORMATION)buffer)->DeleteFile;
+            }
+            __except(knFcSetInformationExceptionFilter(GetExceptionCode()))
+            {
+                return 0;
+            }
+            return deleteFile
+                ? KNFC_SETINFO_SET_DELETE
+                : KNFC_SETINFO_CLEAR_DELETE;
+        }
+        return 0;
+
+    case FileDispositionInformationEx:
+        if (buffer != NULL && length >= sizeof(FILE_DISPOSITION_INFORMATION_EX))
+        {
+            ULONG dispositionFlags = 0;
+            __try
+            {
+                dispositionFlags = ((PFILE_DISPOSITION_INFORMATION_EX)buffer)->Flags;
+            }
+            __except(knFcSetInformationExceptionFilter(GetExceptionCode()))
+            {
+                return 0;
+            }
+            return FlagOn(dispositionFlags, FILE_DISPOSITION_DELETE)
+                ? KNFC_SETINFO_SET_DELETE
+                : KNFC_SETINFO_CLEAR_DELETE;
+        }
+        return 0;
+
+    case FileRenameInformation:
+    case FileRenameInformationEx:
+        return KNFC_SETINFO_MARK_MODIFIED | KNFC_SETINFO_CAPTURE_RENAME;
+
+    default:
+        return 0;
+    }
+}
+
+FLT_PREOP_CALLBACK_STATUS
+knFcPreSetInformation(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+    )
+{
     NTSTATUS status;
     PKNFC_SHC shc = NULL;
+    PKNFC_SETINFO_COMPLETION completion = NULL;
+    ULONG actions;
 
-    UNREFERENCED_PARAMETER(CompletionContext);
+    *CompletionContext = NULL;
+    actions = knFcGetSetInformationActions(Data);
 
-    if (FlagOn(Flags, FLTFL_POST_OPERATION_DRAINING))
+    if (actions == 0)
     {
-        return FLT_POSTOP_FINISHED_PROCESSING;
-    }
-    if (!NT_SUCCESS(Data->IoStatus.Status))
-    {
-        return FLT_POSTOP_FINISHED_PROCESSING;
-    }
-    if (Data->IoStatus.Information == 0)
-    {
-        return FLT_POSTOP_FINISHED_PROCESSING;
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
     status = FltGetStreamHandleContext(
@@ -253,17 +387,58 @@ knFcPostWrite(
         (PFLT_CONTEXT*)&shc);
     if (!NT_SUCCESS(status))
     {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    completion = (PKNFC_SETINFO_COMPLETION)knFcAllocateNonPaged(sizeof(*completion));
+    if (completion == NULL)
+    {
+        FltReleaseContext(shc);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    completion->Shc = shc;
+    completion->Actions = actions;
+    *CompletionContext = completion;
+    return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+}
+
+static FLT_POSTOP_CALLBACK_STATUS
+knFcPostSetInformationSafe(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_opt_ PVOID CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags
+    )
+{
+    PKNFC_SHC shc = (PKNFC_SHC)CompletionContext;
+    PFLT_FILE_NAME_INFORMATION ni = NULL;
+    NTSTATUS status;
+
+    UNREFERENCED_PARAMETER(FltObjects);
+    UNREFERENCED_PARAMETER(Flags);
+
+    if (shc == NULL)
+    {
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
-    InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_MODIFIED);
-    DbgPrint("knFcFlt: post-write pid=%llu bytes=%llu  -> MODIFIED\n",
-        (ULONGLONG)(ULONG_PTR)PsGetCurrentProcessId(),
-        (ULONGLONG)Data->IoStatus.Information);
+
+    status = FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        &ni);
+    if (NT_SUCCESS(status))
+    {
+        if (ni->Name.Length > 0)
+        {
+            knFcShcSetCurrentName(shc, &ni->Name);
+        }
+        FltReleaseFileNameInformation(ni);
+    }
+
     FltReleaseContext(shc);
     return FLT_POSTOP_FINISHED_PROCESSING;
 }
-
-/* ----- PostSetInformation ----- */
 
 FLT_POSTOP_CALLBACK_STATUS
 knFcPostSetInformation(
@@ -273,70 +448,77 @@ knFcPostSetInformation(
     _In_ FLT_POST_OPERATION_FLAGS Flags
     )
 {
-    NTSTATUS status;
-    PKNFC_SHC shc = NULL;
-    FILE_INFORMATION_CLASS cls;
+    PKNFC_SETINFO_COMPLETION completion =
+        (PKNFC_SETINFO_COMPLETION)CompletionContext;
+    PKNFC_SHC shc;
+    ULONG actions;
+    FLT_POSTOP_CALLBACK_STATUS postStatus;
 
-    UNREFERENCED_PARAMETER(CompletionContext);
+    if (completion == NULL)
+    {
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    shc = completion->Shc;
+    actions = completion->Actions;
+    ExFreePoolWithTag(completion, KNFC_POOL_TAG);
 
     if (FlagOn(Flags, FLTFL_POST_OPERATION_DRAINING))
     {
+        FltReleaseContext(shc);
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
     if (!NT_SUCCESS(Data->IoStatus.Status))
     {
+        FltReleaseContext(shc);
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
 
-    status = FltGetStreamHandleContext(
-        FltObjects->Instance,
-        FltObjects->FileObject,
-        (PFLT_CONTEXT*)&shc);
-    if (!NT_SUCCESS(status))
+    if (FlagOn(actions, KNFC_SETINFO_MARK_MODIFIED))
     {
-        return FLT_POSTOP_FINISHED_PROCESSING;
-    }
-
-    cls = Data->Iopb->Parameters.SetFileInformation.FileInformationClass;
-    switch (cls)
-    {
-    case FileEndOfFileInformation:
-    case FileAllocationInformation:
-    case FileValidDataLengthInformation:
         InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_MODIFIED);
-        break;
-
-    case FileDispositionInformation:
-    case FileDispositionInformationEx:
-        InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_DELETE_ON_CLOSE);
-        break;
-
-    case FileRenameInformation:
-    case FileRenameInformationEx:
-    {
-        PFLT_FILE_NAME_INFORMATION ni = NULL;
-        NTSTATUS s2;
-
-        InterlockedOr(&shc->Flags, (LONG)(KNFC_SHC_RENAMED | KNFC_SHC_MODIFIED));
-
-        /* The FileObject already points at the new path here. */
-        s2 = FltGetFileNameInformation(
-            Data,
-            FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
-            &ni);
-        if (NT_SUCCESS(s2))
-        {
-            if (ni->Name.Length > 0)
-            {
-                knFcShcSetCurrentName(shc, &ni->Name);
-            }
-            FltReleaseFileNameInformation(ni);
-        }
-        break;
     }
 
-    default:
-        break;
+    if (FlagOn(actions, KNFC_SETINFO_SET_DELETE))
+    {
+        InterlockedExchange(&shc->DeleteDispositionObserved, TRUE);
+        InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_DELETE_ON_CLOSE);
+    }
+    else if (FlagOn(actions, KNFC_SETINFO_CLEAR_DELETE)
+        && !shc->DeleteOnCloseAtCreate)
+    {
+        InterlockedExchange(&shc->DeleteDispositionObserved, TRUE);
+        InterlockedAnd(&shc->Flags, ~((LONG)KNFC_SHC_DELETE_ON_CLOSE));
+    }
+    else if (FlagOn(actions, KNFC_SETINFO_CLEAR_DELETE))
+    {
+        InterlockedExchange(&shc->DeleteDispositionObserved, TRUE);
+    }
+
+    if (FlagOn(actions, KNFC_SETINFO_CAPTURE_RENAME))
+    {
+        InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_RENAMED);
+        if (KeGetCurrentIrql() <= APC_LEVEL)
+        {
+            return knFcPostSetInformationSafe(
+                Data,
+                FltObjects,
+                shc,
+                Flags);
+        }
+        if (FLT_IS_IRP_OPERATION(Data)
+            && FltDoCompletionProcessingWhenSafe(
+                Data,
+                FltObjects,
+                shc,
+                Flags,
+                knFcPostSetInformationSafe,
+                &postStatus))
+        {
+            return postStatus;
+        }
+        FltReleaseContext(shc);
+        return FLT_POSTOP_FINISHED_PROCESSING;
     }
 
     FltReleaseContext(shc);
@@ -379,7 +561,7 @@ knFcPreAcquireForSection(
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
-/* ----- final-name selection helper (shared between Pre and PostCleanup) ----- */
+/* ----- final-name selection helper ----- */
 
 static NTSTATUS
 knFcResolveFinalName(
@@ -458,6 +640,51 @@ knFcResolveFinalName(
     return STATUS_SUCCESS;
 }
 
+typedef struct _KNFC_CLEANUP_COMPLETION
+{
+    HANDLE          OwnerPid;
+    HANDLE          RootPid;
+    ULONG           Flags;
+    ULONGLONG       FileSizeHint;
+    UNICODE_STRING  Path;
+    WCHAR           PathBuffer[1];
+} KNFC_CLEANUP_COMPLETION, *PKNFC_CLEANUP_COMPLETION;
+
+static PKNFC_CLEANUP_COMPLETION
+knFcAllocateCleanupCompletion(
+    _In_ PKNFC_SHC Shc,
+    _In_ ULONG Flags,
+    _In_ ULONGLONG FileSizeHint,
+    _In_ PCUNICODE_STRING Path
+    )
+{
+    SIZE_T total;
+    PKNFC_CLEANUP_COMPLETION completion;
+
+    if (Path == NULL || Path->Buffer == NULL || Path->Length == 0)
+    {
+        return NULL;
+    }
+
+    total = FIELD_OFFSET(KNFC_CLEANUP_COMPLETION, PathBuffer) + Path->Length;
+    completion = (PKNFC_CLEANUP_COMPLETION)knFcAllocateNonPaged(total);
+    if (completion == NULL)
+    {
+        return NULL;
+    }
+
+    RtlZeroMemory(completion, FIELD_OFFSET(KNFC_CLEANUP_COMPLETION, PathBuffer));
+    completion->OwnerPid = Shc->OwnerPid;
+    completion->RootPid = Shc->RootPid;
+    completion->Flags = Flags;
+    completion->FileSizeHint = FileSizeHint;
+    completion->Path.Buffer = completion->PathBuffer;
+    completion->Path.Length = Path->Length;
+    completion->Path.MaximumLength = Path->Length;
+    RtlCopyMemory(completion->PathBuffer, Path->Buffer, Path->Length);
+    return completion;
+}
+
 /* ----- PreCleanup -----
  * DELETE_ON_CLOSE files are processed here, BEFORE the file system
  * starts tearing down the FileObject. The driver blocks the caller
@@ -474,6 +701,14 @@ knFcPreCleanup(
 {
     NTSTATUS status;
     PKNFC_SHC shc = NULL;
+    PKNFC_CLEANUP_COMPLETION completion = NULL;
+    PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
+    PWCH currentCopy = NULL;
+    USHORT currentLen = 0;
+    UNICODE_STRING currentSnap;
+    PCUNICODE_STRING finalName = NULL;
+    ULONGLONG sizeHint = 0;
+    BOOLEAN passiveSafe;
     LONG snap;
 
     *CompletionContext = NULL;
@@ -488,64 +723,113 @@ knFcPreCleanup(
     }
 
     snap = shc->Flags;
-    if ((snap & KNFC_SHC_MODIFIED) == 0
-        || (snap & KNFC_SHC_DELETE_ON_CLOSE) == 0)
+    if ((snap & KNFC_SHC_BACKED_UP) != 0)
     {
-        /* Hand off to PostCleanup. */
         FltReleaseContext(shc);
-        return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
-    /* DELETE_ON_CLOSE: sync send while the file is still cleanly
-     * accessible by another opener (knFcUxWpf with SHARE_RWD).
-     */
+    passiveSafe =
+        (KeGetCurrentIrql() == PASSIVE_LEVEL && !KeAreAllApcsDisabled());
+
+    if ((snap & (KNFC_SHC_MODIFIED | KNFC_SHC_DELETE_ON_CLOSE)) == 0
+        && InterlockedCompareExchange(
+            &shc->DeleteDispositionObserved, 0, 0) == 0)
     {
-        PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-        PWCH currentCopy = NULL;
-        USHORT currentLen = 0;
-        UNICODE_STRING currentSnap;
-        PCUNICODE_STRING finalName = NULL;
-        ULONGLONG sizeHint = 0;
+        FltReleaseContext(shc);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
 
-        knFcResolveFinalName(Data, shc, &nameInfo, &currentCopy, &currentLen,
-            &finalName, &currentSnap);
+    knFcResolveFinalName(Data, shc, &nameInfo, &currentCopy, &currentLen,
+        &finalName, &currentSnap);
 
-        if (finalName != NULL && !knFcExcludeMatches(finalName))
+    if (finalName == NULL)
+    {
+        goto Cleanup;
+    }
+
+    if (passiveSafe && knFcExcludeMatches(finalName))
+    {
+        goto Cleanup;
+    }
+
+    if (passiveSafe && IoGetTopLevelIrp() == NULL)
+    {
+        FILE_STANDARD_INFORMATION fsi;
+        NTSTATUS queryStatus = FltQueryInformationFile(
+            FltObjects->Instance,
+            FltObjects->FileObject,
+            &fsi,
+            sizeof(fsi),
+            FileStandardInformation,
+            NULL);
+        if (NT_SUCCESS(queryStatus))
         {
-            FILE_STANDARD_INFORMATION fsi;
-            NTSTATUS s2 = FltQueryInformationFile(
-                FltObjects->Instance,
-                FltObjects->FileObject,
-                &fsi,
-                sizeof(fsi),
-                FileStandardInformation,
-                NULL);
-            if (NT_SUCCESS(s2))
+            sizeHint = (ULONGLONG)fsi.EndOfFile.QuadPart;
+            if (InterlockedCompareExchange(
+                &shc->DeleteDispositionObserved, 0, 0) != 0)
             {
-                sizeHint = (ULONGLONG)fsi.EndOfFile.QuadPart;
+                if (fsi.DeletePending)
+                {
+                    snap |= KNFC_SHC_DELETE_ON_CLOSE;
+                }
+                else
+                {
+                    snap &= ~((LONG)KNFC_SHC_DELETE_ON_CLOSE);
+                }
             }
+        }
+    }
 
+    if ((snap & (KNFC_SHC_MODIFIED | KNFC_SHC_DELETE_ON_CLOSE)) == 0)
+    {
+        goto Cleanup;
+    }
+
+    if ((snap & KNFC_SHC_DELETE_ON_CLOSE) != 0)
+    {
+        if (passiveSafe)
+        {
             (VOID)knFcQueueSendSyncFromCleanup(
                 shc->OwnerPid, shc->RootPid, (ULONG)snap, sizeHint, finalName);
             DbgPrint("knFcFlt: pre-cleanup sync pid=%llu flags=0x%x size=%llu name=%wZ\n",
-                (ULONGLONG)(ULONG_PTR)shc->OwnerPid, (ULONG)snap, sizeHint, finalName);
-
-            /* Mark so PostCleanup does not re-process. */
+                (ULONGLONG)(ULONG_PTR)shc->OwnerPid,
+                (ULONG)snap,
+                sizeHint,
+                finalName);
             InterlockedOr(&shc->Flags, (LONG)KNFC_SHC_BACKED_UP);
         }
-
-        if (currentCopy != NULL)
+        else
         {
-            ExFreePoolWithTag(currentCopy, KNFC_POOL_TAG);
+            (VOID)knFcQueueEnqueue(
+                shc->OwnerPid, shc->RootPid, (ULONG)snap, sizeHint, finalName);
+            DbgPrint("knFcFlt: pre-cleanup elevated fallback pid=%llu flags=0x%x\n",
+                (ULONGLONG)(ULONG_PTR)shc->OwnerPid,
+                (ULONG)snap);
         }
-        if (nameInfo != NULL)
-        {
-            FltReleaseFileNameInformation(nameInfo);
-        }
+        goto Cleanup;
     }
 
+    completion = knFcAllocateCleanupCompletion(
+        shc, (ULONG)snap, sizeHint, finalName);
+
+Cleanup:
+    if (currentCopy != NULL)
+    {
+        ExFreePoolWithTag(currentCopy, KNFC_POOL_TAG);
+    }
+    if (nameInfo != NULL)
+    {
+        FltReleaseFileNameInformation(nameInfo);
+    }
     FltReleaseContext(shc);
-    /* No PostCleanup needed; the file is about to disappear. */
+
+    if (completion != NULL)
+    {
+        *CompletionContext = completion;
+        return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+    }
+
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
@@ -559,95 +843,25 @@ knFcPostCleanup(
     _In_ FLT_POST_OPERATION_FLAGS Flags
     )
 {
-    NTSTATUS status;
-    PKNFC_SHC shc = NULL;
-    PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-    PWCH currentCopy = NULL;
-    USHORT currentLen = 0;
-    UNICODE_STRING currentSnap;
-    PCUNICODE_STRING finalName = NULL;
-    LONG snap;
-    ULONGLONG sizeHint = 0;
+    PKNFC_CLEANUP_COMPLETION completion =
+        (PKNFC_CLEANUP_COMPLETION)CompletionContext;
 
-    UNREFERENCED_PARAMETER(CompletionContext);
+    UNREFERENCED_PARAMETER(Data);
+    UNREFERENCED_PARAMETER(FltObjects);
 
-    if (FlagOn(Flags, FLTFL_POST_OPERATION_DRAINING))
+    if (completion != NULL)
     {
-        return FLT_POSTOP_FINISHED_PROCESSING;
+        if (!FlagOn(Flags, FLTFL_POST_OPERATION_DRAINING))
+        {
+            (VOID)knFcQueueEnqueue(
+                completion->OwnerPid,
+                completion->RootPid,
+                completion->Flags,
+                completion->FileSizeHint,
+                &completion->Path);
+        }
+        ExFreePoolWithTag(completion, KNFC_POOL_TAG);
     }
 
-    status = FltGetStreamHandleContext(
-        FltObjects->Instance,
-        FltObjects->FileObject,
-        (PFLT_CONTEXT*)&shc);
-    if (!NT_SUCCESS(status))
-    {
-        return FLT_POSTOP_FINISHED_PROCESSING;
-    }
-
-    do
-    {
-        snap = shc->Flags;
-        DbgPrint("knFcFlt: post-cleanup pid=%llu flags=0x%x\n",
-            (ULONGLONG)(ULONG_PTR)shc->OwnerPid, (ULONG)snap);
-        if ((snap & KNFC_SHC_MODIFIED) == 0)
-        {
-            break;
-        }
-        if (snap & KNFC_SHC_BACKED_UP)
-        {
-            /* PreCleanup already handled this (DELETE_ON_CLOSE path). */
-            break;
-        }
-
-        knFcResolveFinalName(Data, shc, &nameInfo, &currentCopy, &currentLen,
-            &finalName, &currentSnap);
-        if (finalName == NULL)
-        {
-            break;
-        }
-
-        if (knFcExcludeMatches(finalName))
-        {
-            DbgPrint("knFcFlt: exclude  pid=%llu name=%wZ\n",
-                (ULONGLONG)(ULONG_PTR)shc->OwnerPid, finalName);
-            break;
-        }
-
-        {
-            FILE_STANDARD_INFORMATION fsi;
-            NTSTATUS s2 = FltQueryInformationFile(
-                FltObjects->Instance,
-                FltObjects->FileObject,
-                &fsi,
-                sizeof(fsi),
-                FileStandardInformation,
-                NULL);
-            if (NT_SUCCESS(s2))
-            {
-                sizeHint = (ULONGLONG)fsi.EndOfFile.QuadPart;
-            }
-        }
-
-        (VOID)knFcQueueEnqueue(
-            shc->OwnerPid, shc->RootPid, (ULONG)snap, sizeHint, finalName);
-        DbgPrint("knFcFlt: enqueue pid=%llu root=%llu flags=0x%x size=%llu name=%wZ\n",
-            (ULONGLONG)(ULONG_PTR)shc->OwnerPid,
-            (ULONGLONG)(ULONG_PTR)shc->RootPid,
-            (ULONG)snap,
-            sizeHint,
-            finalName);
-    }
-    while (FALSE);
-
-    if (currentCopy != NULL)
-    {
-        ExFreePoolWithTag(currentCopy, KNFC_POOL_TAG);
-    }
-    if (nameInfo != NULL)
-    {
-        FltReleaseFileNameInformation(nameInfo);
-    }
-    FltReleaseContext(shc);
     return FLT_POSTOP_FINISHED_PROCESSING;
 }

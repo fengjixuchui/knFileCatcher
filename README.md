@@ -150,6 +150,7 @@ knFileCatcher\
 | `OwnerPid`       | Process that opened the handle                            |
 | `RootPid`        | Inherited from tracker table at PostCreate                |
 | `Flags`          | `KNFC_SHC_*` bits, accumulated atomically                 |
+| `DeleteDispositionObserved` | Enables final `DeletePending` reconciliation at cleanup |
 | `NameLock`       | Push lock guarding `CurrentName`                          |
 | `OriginalName`   | Captured once at PostCreate, immutable                    |
 | `CurrentName`    | Updated on rename (PostSetInformation)                    |
@@ -160,24 +161,28 @@ Flag bits (`src\common\knFcProto.h`):
 |------------------------------|-------------------------------------------------------|
 | `WRITE_INTENT`     `0x01`    | Open requested any write access OR a creating dispo OR `DELETE_ON_CLOSE` |
 | `MODIFIED`         `0x02`    | PostWrite / EOF-class SetInfo / section sync / created / delete-only |
-| `DELETE_ON_CLOSE`  `0x04`    | Open / SetInfo asked for delete-on-close              |
+| `DELETE_ON_CLOSE`  `0x04`    | Open / successful SetInfo currently requests deletion |
 | `RENAMED`          `0x08`    | PostSetInformation observed a rename                  |
 | `TEMPORARY`        `0x10`    | (reserved)                                            |
 | `CREATED`          `0x20`    | CREATE / SUPERSEDE / OVERWRITE[_IF] (also sets MODIFIED) |
 | `BACKED_UP`        `0x40`    | PreCleanup already handled (DELETE_ON_CLOSE)          |
 
-Note that `DELETE_ON_CLOSE` always implies `MODIFIED` since M8 - so even a
-delete-only open (no `WriteFile` between create and close, e.g. `ZwDeleteFile`)
-gets a sync capture of the file's pre-delete content.
+Cleanup eligibility is `MODIFIED || DELETE_ON_CLOSE`, so a delete-only handle
+(no `WriteFile` between create and close, e.g. `ZwDeleteFile`) still gets a
+sync capture. A successful disposition-cancel request clears the delete state
+unless the handle was opened with `FILE_DELETE_ON_CLOSE`, for which Windows
+documents that a later `DeleteFile = FALSE` has no effect. When cleanup can
+safely query the file, `FILE_STANDARD_INFORMATION.DeletePending` overrides the
+per-operation heuristic so racing disposition requests use the final state.
 
 ### Callback wiring
 
 | IRP_MJ_*                              | Pre                         | Post                        |
 |---------------------------------------|-----------------------------|-----------------------------|
 | `CREATE`                              | early skip for kernel mode  | classify intent, install SHC |
-| `WRITE`                               | -                           | OR `MODIFIED`               |
-| `SET_INFORMATION`                     | -                           | EOF/Alloc -> MODIFIED, rename -> capture new name, dispo -> DELETE_ON_CLOSE |
-| `CLEANUP`                             | DELETE_ON_CLOSE -> sync send (sets BACKED_UP) | enqueue async (skipped if BACKED_UP) |
+| `WRITE`                               | acquire SHC; skip untracked handles | OR `MODIFIED`; release pre-captured SHC |
+| `SET_INFORMATION`                     | parse relevant payload; acquire SHC | EOF/Alloc -> MODIFIED, safe rename-name capture, disposition set/clear |
+| `CLEANUP`                             | snapshot final path; DELETE_ON_CLOSE -> PASSIVE sync send or elevated-IRQL async fallback | enqueue snapshot only |
 | `ACQUIRE_FOR_SECTION_SYNCHRONIZATION` | writable section -> MODIFIED | -                          |
 
 ### Backup queue (kernel side)
@@ -187,12 +192,21 @@ gets a sync capture of the file's pre-delete content.
 | `KNFC_QUEUE_WORKER_COUNT`        | 4             | Kernel system threads draining the queue   |
 | `KNFC_QUEUE_MAX_DEPTH`           | 16 384        | Cap before items are dropped + counted     |
 | Async send reply timeout         | 10 s          | Constant per item                          |
-| **Sync (PreCleanup) timeout**    | 10 s + 1 s per 50 MB of `FileSizeHint`, capped at 60 s | Multi-GB DELETE_ON_CLOSE files |
+| **Sync (PreCleanup) timeout**    | 10 s + 1 s per 50 MB of `FileSizeHint`, capped at 60 s | Used only at PASSIVE_LEVEL with APC delivery enabled |
 | Fallback                         | sync fail -> async enqueue | At least one more chance per request, status surfaces in manifest |
+
+Asynchronous cleanup requests are path-snapshotted before cleanup and filtered
+early when PreCleanup is safely at PASSIVE_LEVEL, then checked again by the
+PASSIVE_LEVEL queue workers. This keeps excluded traffic from consuming queue
+capacity while retaining a safe worker-side check for elevated callbacks. If a
+DELETE_ON_CLOSE cleanup arrives above PASSIVE_LEVEL, the driver never blocks or
+queries the filesystem; it queues a best-effort request before cleanup instead.
 
 The single linked list is guarded by a spin lock. Producers (`knFcQueueEnqueue`)
 do an `InterlockedIncrement` to check the depth before allocating, so the cap
-is lock-free.
+is lock-free. Producer rundown covers both async insertion and synchronous
+cleanup sends, so unload waits for in-flight producers before joining workers
+and closing the communication port.
 
 ### Kernel pool allocation compatibility
 
@@ -548,6 +562,9 @@ The target machine needs no .NET installed - just unzip and double-click.
 Compiles the C++20 driver TUs, links, and signs `knFcFlt.sys` without
 going through the Visual Studio project. Useful for fast iteration on the
 kernel side, or on a build agent where the VS WDK extension is not installed.
+If the VS environment selects a Windows SDK without KM headers, the script
+automatically selects the newest installed WDK with a matching KM include/lib
+pair.
 
 | Flag                  | Effect                                                          |
 |-----------------------|-----------------------------------------------------------------|
@@ -561,6 +578,17 @@ Examples:
 ```powershell
 .\src\tools\build-driver.ps1
 .\src\tools\build-driver.ps1 -OutDir E:\tmp\knFcFlt-build -NoSign
+```
+
+### `check-irql-contracts.ps1` - callback regression check
+
+Rejects known unsafe post-operation API patterns and verifies pre-captured
+contexts, delete set/cancel handling, delete-only cleanup eligibility, queue
+producer rundown, deterministic worker joins, and high-frequency post logging.
+
+```powershell
+.\src\tools\check-irql-contracts.ps1 -SelfTest
+.\src\tools\check-irql-contracts.ps1
 ```
 
 ### `sign.ps1` - self-signed dev certificate

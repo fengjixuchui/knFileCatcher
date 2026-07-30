@@ -74,16 +74,35 @@ Import-Module (Join-Path $VsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.
 Enter-VsDevShell -VsInstallPath $VsPath -SkipAutomaticLocation `
     -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
 
-$ver    = $env:WindowsSDKVersion.TrimEnd('\')
-$kmInc  = "$env:WindowsSdkDir`Include\$ver\km"
-$shInc  = "$env:WindowsSdkDir`Include\$ver\shared"
-$crtInc = "$env:WindowsSdkDir`Include\$ver\km\crt"
-$kmLib  = "$env:WindowsSdkDir`Lib\$ver\km\x64"
+$ver = $env:WindowsSDKVersion.TrimEnd('\')
+$kitRoot = $env:WindowsSdkDir
+$kmInc = "$kitRoot`Include\$ver\km"
+$kmLib = "$kitRoot`Lib\$ver\km\x64"
 
-if (-not (Test-Path $kmInc))
+if (-not (Test-Path $kmInc) -or -not (Test-Path $kmLib))
 {
-    throw "WDK km headers not found at $kmInc"
+    $wdk = Get-ChildItem (Join-Path $kitRoot 'Include') -Directory |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+        Sort-Object { [version]$_.Name } -Descending |
+        Where-Object {
+            (Test-Path (Join-Path $_.FullName 'km\fltKernel.h')) -and
+            (Test-Path (Join-Path $kitRoot "Lib\$($_.Name)\km\x64"))
+        } |
+        Select-Object -First 1
+
+    if ($null -eq $wdk)
+    {
+        throw "No complete WDK km include/lib pair found under $kitRoot"
+    }
+
+    $ver = $wdk.Name
+    $kmInc = Join-Path $wdk.FullName 'km'
+    $kmLib = Join-Path $kitRoot "Lib\$ver\km\x64"
+    Write-Host "knFcFlt-build: selected WDK $ver"
 }
+
+$shInc  = "$kitRoot`Include\$ver\shared"
+$crtInc = "$kitRoot`Include\$ver\km\crt"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 Push-Location $OutDir

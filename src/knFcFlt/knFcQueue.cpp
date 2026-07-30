@@ -2,7 +2,7 @@
  * knFcQueue.cpp
  * Backup request queue + fixed system worker pool.
  *
- * Producers: PostCleanup callback (PASSIVE_LEVEL) via knFcQueueEnqueue.
+ * Producers: cleanup callbacks (up to DISPATCH_LEVEL) via knFcQueueEnqueue.
  * Consumers: KNFC_QUEUE_WORKER_COUNT system threads dequeue and call
  *            knFcCommSendMessage (which wraps FltSendMessage) with a
  *            bounded wait time. User mode has exactly one port reader.
@@ -45,6 +45,7 @@ typedef struct _KNFC_QUEUE_ITEM
 
 typedef struct _KNFC_QUEUE
 {
+    EX_RUNDOWN_REF  ProducerRundown;
     KSPIN_LOCK      Lock;
     LIST_ENTRY      List;
     KEVENT          Event;
@@ -57,11 +58,13 @@ typedef struct _KNFC_QUEUE
     volatile LONG64 SyncSent;
     volatile LONG64 SyncFailed;
     LONG64          NextId;
-    BOOLEAN         Stop;
+    volatile LONG   Stop;
 } KNFC_QUEUE;
 
 static KNFC_QUEUE g_Queue;
 
+_IRQL_requires_same_
+_Function_class_(KSTART_ROUTINE)
 static VOID knFcQueueWorker(_In_ PVOID Context);
 
 NTSTATUS
@@ -72,6 +75,7 @@ knFcQueueInitialize(VOID)
     ULONG i;
 
     RtlZeroMemory(&g_Queue, sizeof(g_Queue));
+    ExInitializeRundownProtection(&g_Queue.ProducerRundown);
     KeInitializeSpinLock(&g_Queue.Lock);
     InitializeListHead(&g_Queue.List);
     KeInitializeEvent(&g_Queue.Event, NotificationEvent, FALSE);
@@ -101,26 +105,21 @@ knFcQueueInitialize(VOID)
             KernelMode,
             &g_Queue.Threads[i],
             NULL);
-        ZwClose(threadHandle);
         if (!NT_SUCCESS(status))
         {
-            /* Thread is running but we cannot reference it. Signal
-             * stop, best-effort wait, then fail the init - without the
-             * delay knFcQueueUninitialize would skip this slot (it
-             * loops only up to ThreadCount) and the orphan worker
-             * would UAF on g_Queue at driver unload.
+            /* The thread is already running. Keep its kernel handle
+             * long enough to stop and join it deterministically; a
+             * timed delay cannot prove that g_Queue is no longer in use.
              */
-            LARGE_INTEGER delay;
-
             DbgPrint("knFcFlt: worker[%lu] Ob ref failed 0x%08x\n", i, status);
             g_Queue.Threads[i] = NULL;
-            g_Queue.Stop = TRUE;
+            InterlockedExchange(&g_Queue.Stop, TRUE);
             KeSetEvent(&g_Queue.Event, IO_NO_INCREMENT, FALSE);
-
-            delay.QuadPart = -((LONGLONG)2 * 10000 * 1000);  /* 2 seconds */
-            (VOID)KeDelayExecutionThread(KernelMode, FALSE, &delay);
+            (VOID)ZwWaitForSingleObject(threadHandle, FALSE, NULL);
+            ZwClose(threadHandle);
             break;
         }
+        ZwClose(threadHandle);
         ++g_Queue.ThreadCount;
     }
 
@@ -140,7 +139,8 @@ knFcQueueUninitialize(VOID)
 {
     ULONG i;
 
-    g_Queue.Stop = TRUE;
+    InterlockedExchange(&g_Queue.Stop, TRUE);
+    ExWaitForRundownProtectionRelease(&g_Queue.ProducerRundown);
     KeSetEvent(&g_Queue.Event, IO_NO_INCREMENT, FALSE);
 
     /* Wait for every worker we successfully created. The set is small
@@ -170,6 +170,7 @@ knFcQueueUninitialize(VOID)
         if (!IsListEmpty(&g_Queue.List))
         {
             le = RemoveHeadList(&g_Queue.List);
+            InterlockedDecrement(&g_Queue.Depth);
         }
         KeReleaseSpinLock(&g_Queue.Lock, irql);
 
@@ -185,6 +186,7 @@ knFcQueueUninitialize(VOID)
         g_Queue.SyncSent, g_Queue.SyncFailed);
 }
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS
 knFcQueueEnqueue(
     _In_ HANDLE OwnerPid,
@@ -194,9 +196,10 @@ knFcQueueEnqueue(
     _In_ PCUNICODE_STRING Path
     )
 {
+    NTSTATUS status = STATUS_SUCCESS;
     SIZE_T total;
     USHORT pathBytes;
-    KNFC_QUEUE_ITEM* item;
+    KNFC_QUEUE_ITEM* item = NULL;
     KIRQL irql;
     LONG depth;
 
@@ -204,47 +207,61 @@ knFcQueueEnqueue(
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (g_Queue.Stop)
+    if (!ExAcquireRundownProtection(&g_Queue.ProducerRundown))
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    depth = InterlockedIncrement(&g_Queue.Depth);
-    if (depth > KNFC_QUEUE_MAX_DEPTH)
+    do
     {
-        InterlockedDecrement(&g_Queue.Depth);
-        InterlockedIncrement(&g_Queue.Dropped);
-        return STATUS_INSUFFICIENT_RESOURCES;
+        if (g_Queue.Stop)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            break;
+        }
+
+        depth = InterlockedIncrement(&g_Queue.Depth);
+        if (depth > KNFC_QUEUE_MAX_DEPTH)
+        {
+            InterlockedDecrement(&g_Queue.Depth);
+            InterlockedIncrement(&g_Queue.Dropped);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        pathBytes = Path->Length;
+        total = sizeof(KNFC_QUEUE_ITEM) + pathBytes;
+
+        item = (KNFC_QUEUE_ITEM*)knFcAllocateNonPaged(total);
+        if (item == NULL)
+        {
+            InterlockedDecrement(&g_Queue.Depth);
+            InterlockedIncrement(&g_Queue.Dropped);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        RtlZeroMemory(item, sizeof(*item));
+        item->RequestId    = (ULONGLONG)InterlockedIncrement64(&g_Queue.NextId);
+        item->OwnerPid     = OwnerPid;
+        item->RootPid      = RootPid;
+        item->Flags        = Flags;
+        item->FileSizeHint = FileSizeHint;
+        item->Path.Buffer        = (PWCH)(item + 1);
+        item->Path.Length        = pathBytes;
+        item->Path.MaximumLength = pathBytes;
+        RtlCopyMemory(item->Path.Buffer, Path->Buffer, pathBytes);
+
+        KeAcquireSpinLock(&g_Queue.Lock, &irql);
+        InsertTailList(&g_Queue.List, &item->Link);
+        KeReleaseSpinLock(&g_Queue.Lock, irql);
+
+        KeSetEvent(&g_Queue.Event, IO_NO_INCREMENT, FALSE);
     }
+    while (FALSE);
 
-    pathBytes = Path->Length;
-    total = sizeof(KNFC_QUEUE_ITEM) + pathBytes;
-
-    item = (KNFC_QUEUE_ITEM*)knFcAllocateNonPaged(total);
-    if (item == NULL)
-    {
-        InterlockedDecrement(&g_Queue.Depth);
-        InterlockedIncrement(&g_Queue.Dropped);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    RtlZeroMemory(item, sizeof(*item));
-    item->RequestId    = (ULONGLONG)InterlockedIncrement64(&g_Queue.NextId);
-    item->OwnerPid     = OwnerPid;
-    item->RootPid      = RootPid;
-    item->Flags        = Flags;
-    item->FileSizeHint = FileSizeHint;
-    item->Path.Buffer        = (PWCH)(item + 1);
-    item->Path.Length        = pathBytes;
-    item->Path.MaximumLength = pathBytes;
-    RtlCopyMemory(item->Path.Buffer, Path->Buffer, pathBytes);
-
-    KeAcquireSpinLock(&g_Queue.Lock, &irql);
-    InsertTailList(&g_Queue.List, &item->Link);
-    KeReleaseSpinLock(&g_Queue.Lock, irql);
-
-    KeSetEvent(&g_Queue.Event, IO_NO_INCREMENT, FALSE);
-    return STATUS_SUCCESS;
+    ExReleaseRundownProtection(&g_Queue.ProducerRundown);
+    return status;
 }
 
 static VOID
@@ -257,6 +274,14 @@ knFcQueueSendOne(_In_ KNFC_QUEUE_ITEM* Item)
     ULONG replyLen;
     LARGE_INTEGER timeout;
     PVOID buf;
+
+    if (knFcExcludeMatches(&Item->Path))
+    {
+        DbgPrint("knFcFlt: exclude pid=%llu path=%wZ\n",
+            (ULONGLONG)(ULONG_PTR)Item->OwnerPid,
+            &Item->Path);
+        return;
+    }
 
     msgLen = (ULONG)(sizeof(KNFC_BACKUP_REQUEST) + Item->Path.Length);
     if (msgLen < sizeof(KNFC_BACKUP_REQUEST))
@@ -313,6 +338,8 @@ knFcQueueSendOne(_In_ KNFC_QUEUE_ITEM* Item)
     ExFreePoolWithTag(buf, KNFC_POOL_TAG);
 }
 
+_IRQL_requires_same_
+_Function_class_(KSTART_ROUTINE)
 static VOID
 knFcQueueWorker(_In_ PVOID Context)
 {
@@ -378,7 +405,7 @@ knFcQueueSendSyncFromCleanup(
     _In_ PCUNICODE_STRING Path
     )
 {
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
     ULONG msgLen;
     PVOID buf = NULL;
     KNFC_BACKUP_REQUEST* req;
@@ -390,68 +417,81 @@ knFcQueueSendSyncFromCleanup(
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (g_Queue.Stop)
+    if (!ExAcquireRundownProtection(&g_Queue.ProducerRundown))
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    msgLen = (ULONG)(sizeof(KNFC_BACKUP_REQUEST) + Path->Length);
-    buf = knFcAllocateNonPaged(msgLen);
-    if (buf == NULL)
+    do
     {
-        InterlockedIncrement64(&g_Queue.SyncFailed);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    req = (KNFC_BACKUP_REQUEST*)buf;
-    RtlZeroMemory(req, sizeof(*req));
-    req->Header.Type      = (unsigned int)KnFcMsgBackupRequest;
-    req->Header.Size      = msgLen;
-    req->RequestId        = (ULONGLONG)InterlockedIncrement64(&g_Queue.NextId);
-    req->OwnerPid         = (unsigned long long)(ULONG_PTR)OwnerPid;
-    req->RootPid          = (unsigned long long)(ULONG_PTR)RootPid;
-    req->FileSizeHint     = FileSizeHint;
-    req->Flags            = Flags;
-    req->PathLengthBytes  = Path->Length;
-    RtlCopyMemory((PUCHAR)buf + sizeof(*req), Path->Buffer, Path->Length);
-
-    RtlZeroMemory(&reply, sizeof(reply));
-    replyLen = sizeof(reply);
-
-    {
-        LONGLONG extraSec = (LONGLONG)(FileSizeHint / (50ULL * 1024 * 1024));
-        if (extraSec > KNFC_SYNC_MAX_EXTRA_SEC)
+        if (g_Queue.Stop)
         {
-            extraSec = KNFC_SYNC_MAX_EXTRA_SEC;
+            status = STATUS_DEVICE_NOT_READY;
+            break;
         }
-        timeout.QuadPart = -(KNFC_SYNC_BASE_100NS + extraSec * KNFC_SYNC_PER_50MB_100NS);
+
+        msgLen = (ULONG)(sizeof(KNFC_BACKUP_REQUEST) + Path->Length);
+        buf = knFcAllocateNonPaged(msgLen);
+        if (buf == NULL)
+        {
+            InterlockedIncrement64(&g_Queue.SyncFailed);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        req = (KNFC_BACKUP_REQUEST*)buf;
+        RtlZeroMemory(req, sizeof(*req));
+        req->Header.Type      = (unsigned int)KnFcMsgBackupRequest;
+        req->Header.Size      = msgLen;
+        req->RequestId        = (ULONGLONG)InterlockedIncrement64(&g_Queue.NextId);
+        req->OwnerPid         = (unsigned long long)(ULONG_PTR)OwnerPid;
+        req->RootPid          = (unsigned long long)(ULONG_PTR)RootPid;
+        req->FileSizeHint     = FileSizeHint;
+        req->Flags            = Flags;
+        req->PathLengthBytes  = Path->Length;
+        RtlCopyMemory((PUCHAR)buf + sizeof(*req), Path->Buffer, Path->Length);
+
+        RtlZeroMemory(&reply, sizeof(reply));
+        replyLen = sizeof(reply);
+
+        {
+            LONGLONG extraSec = (LONGLONG)(FileSizeHint / (50ULL * 1024 * 1024));
+            if (extraSec > KNFC_SYNC_MAX_EXTRA_SEC)
+            {
+                extraSec = KNFC_SYNC_MAX_EXTRA_SEC;
+            }
+            timeout.QuadPart = -(KNFC_SYNC_BASE_100NS + extraSec * KNFC_SYNC_PER_50MB_100NS);
+        }
+
+        status = knFcCommSendMessage(buf, msgLen, &reply, &replyLen, &timeout);
+
+        if (NT_SUCCESS(status) && reply.Status == 0)
+        {
+            InterlockedIncrement64(&g_Queue.SyncSent);
+        }
+        else
+        {
+            InterlockedIncrement64(&g_Queue.SyncFailed);
+            DbgPrint("knFcFlt: sync-cleanup backup id=%llu sendNt=0x%08x userStatus=%u path=%wZ\n",
+                req->RequestId,
+                (ULONG)status,
+                NT_SUCCESS(status) ? reply.Status : 0u,
+                Path);
+
+            /* Best-effort fallback: hand the request off to the async queue
+             * so the worker pool gets one more chance. If rundown started,
+             * the nested enqueue acquisition fails without touching the list.
+             */
+            (VOID)knFcQueueEnqueue(OwnerPid, RootPid, Flags, FileSizeHint, Path);
+        }
     }
+    while (FALSE);
 
-    status = knFcCommSendMessage(buf, msgLen, &reply, &replyLen, &timeout);
-
-    if (NT_SUCCESS(status) && reply.Status == 0)
+    if (buf != NULL)
     {
-        InterlockedIncrement64(&g_Queue.SyncSent);
+        ExFreePoolWithTag(buf, KNFC_POOL_TAG);
     }
-    else
-    {
-        InterlockedIncrement64(&g_Queue.SyncFailed);
-        DbgPrint("knFcFlt: sync-cleanup backup id=%llu sendNt=0x%08x userStatus=%u path=%wZ\n",
-            req->RequestId,
-            (ULONG)status,
-            NT_SUCCESS(status) ? reply.Status : 0u,
-            Path);
-
-        /* Best-effort fallback: hand the request off to the async queue
-         * so the worker pool gets one more chance. If the file has
-         * already disappeared (cleanup completed), the async copy will
-         * fail visibly in the manifest. Either way the user sees the
-         * attempt instead of a silent loss.
-         */
-        (VOID)knFcQueueEnqueue(OwnerPid, RootPid, Flags, FileSizeHint, Path);
-    }
-
-    ExFreePoolWithTag(buf, KNFC_POOL_TAG);
+    ExReleaseRundownProtection(&g_Queue.ProducerRundown);
     return status;
 }
 

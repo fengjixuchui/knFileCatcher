@@ -279,9 +279,17 @@ knFcCommDisconnect(_In_opt_ PVOID ConnectionCookie)
 
 /* ----- per-type handlers ----- */
 
+static LONG
+knFcCommExceptionFilter(_In_ NTSTATUS Status)
+{
+    return FsRtlIsNtstatusExpected(Status)
+        ? EXCEPTION_EXECUTE_HANDLER
+        : EXCEPTION_CONTINUE_SEARCH;
+}
+
 static NTSTATUS
 knFcHandlePing(
-    _Out_writes_bytes_to_(OutLen, *Returned) PVOID Out,
+    _Out_writes_bytes_to_opt_(OutLen, *Returned) PVOID Out,
     _In_ ULONG OutLen,
     _Out_ PULONG Returned)
 {
@@ -302,10 +310,12 @@ knFcHandlePing(
 
     __try
     {
-        ProbeForWrite(Out, sizeof(reply), 1);
+        /* Output memory is intentionally uninitialized on entry. */
+#pragma warning(suppress: 6001)
+        ProbeForRead(Out, sizeof(reply), 1);
         RtlCopyMemory(Out, &reply, sizeof(reply));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         return GetExceptionCode();
     }
@@ -315,7 +325,7 @@ knFcHandlePing(
 
 static NTSTATUS
 knFcHandleGetStats(
-    _Out_writes_bytes_to_(OutLen, *Returned) PVOID Out,
+    _Out_writes_bytes_to_opt_(OutLen, *Returned) PVOID Out,
     _In_ ULONG OutLen,
     _Out_ PULONG Returned)
 {
@@ -348,10 +358,12 @@ knFcHandleGetStats(
 
     __try
     {
-        ProbeForWrite(Out, sizeof(reply), 1);
+        /* Output memory is intentionally uninitialized on entry. */
+#pragma warning(suppress: 6001)
+        ProbeForRead(Out, sizeof(reply), 1);
         RtlCopyMemory(Out, &reply, sizeof(reply));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         return GetExceptionCode();
     }
@@ -361,7 +373,7 @@ knFcHandleGetStats(
 
 static NTSTATUS
 knFcHandleGetProcessTree(
-    _Out_writes_bytes_to_(OutLen, *Returned) PVOID Out,
+    _Out_writes_bytes_to_opt_(OutLen, *Returned) PVOID Out,
     _In_ ULONG OutLen,
     _Out_ PULONG Returned)
 {
@@ -392,10 +404,12 @@ knFcHandleGetProcessTree(
 
     __try
     {
-        ProbeForWrite(Out, sizeof(KNFC_PROCESS_TREE_REPLY), 1);
+        /* Output memory is intentionally uninitialized on entry. */
+#pragma warning(suppress: 6001)
+        ProbeForRead(Out, sizeof(KNFC_PROCESS_TREE_REPLY), 1);
         RtlCopyMemory(Out, reply, sizeof(KNFC_PROCESS_TREE_REPLY));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         ExFreePoolWithTag(reply, KNFC_POOL_TAG);
         return GetExceptionCode();
@@ -424,7 +438,7 @@ knFcHandleAddExclude(
         ProbeForRead(In, InLen, 1);
         RtlCopyMemory(&hdr, In, sizeof(hdr));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         return GetExceptionCode();
     }
@@ -449,7 +463,7 @@ knFcHandleAddExclude(
     {
         RtlCopyMemory(localCopy, (PUCHAR)In + sizeof(hdr), hdr.PatternLengthBytes);
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         ExFreePoolWithTag(localCopy, KNFC_POOL_TAG);
         return GetExceptionCode();
@@ -492,7 +506,7 @@ knFcHandleAddRoot(
         ProbeForRead(In, InLen, 1);
         RtlCopyMemory(&hdr, In, sizeof(hdr));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         return GetExceptionCode();
     }
@@ -521,7 +535,7 @@ knFcHandleAddRoot(
             (PUCHAR)In + sizeof(hdr),
             hdr.PathLengthBytes);
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         ExFreePoolWithTag(localCopy, KNFC_POOL_TAG);
         return GetExceptionCode();
@@ -575,7 +589,7 @@ knFcCommMessage(
         ProbeForRead(InputBuffer, sizeof(KNFC_MSG_HEADER), 1);
         RtlCopyMemory(&hdr, InputBuffer, sizeof(KNFC_MSG_HEADER));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    __except(knFcCommExceptionFilter(GetExceptionCode()))
     {
         return GetExceptionCode();
     }
